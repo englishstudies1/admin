@@ -2362,6 +2362,11 @@ footer::after{
           <span class="adm-nav-label">Request Resources</span>
           <span class="adm-nav-badge" id="resourceReqBadge" style="display:none;"></span>
         </div>
+        <div class="adm-nav-item" data-tab="verify-admin" onclick="switchAdminTab('verify-admin',this);renderAdminVerify();">
+          <span class="adm-nav-icon">🪪</span>
+          <span class="adm-nav-label">Member Verification</span>
+          <span class="adm-nav-badge" id="verifyReqBadge" style="display:none;"></span>
+        </div>
       </div>
 
       <div class="adm-nav-group-sep"></div>
@@ -2558,6 +2563,18 @@ footer::after{
         <h2 style="font-family:var(--theme-font-display);font-size:20px;font-weight:800;color:var(--navy);margin-bottom:4px;letter-spacing:-.3px;">📦 Request Resources</h2>
         <p style="font-size:12.5px;color:var(--muted);margin-bottom:18px;">Resources students have requested for the Student Space.</p>
         <div id="adminResourceRequestsContent"></div>
+      </div>
+
+      <!-- Member Verification -->
+      <div class="admin-section-content" id="admin-verify-admin">
+        <h2 style="font-family:var(--theme-font-display);font-size:20px;font-weight:800;color:var(--navy);margin-bottom:4px;letter-spacing:-.3px;">🪪 Member Verification</h2>
+        <p style="font-size:12.5px;color:var(--muted);margin-bottom:18px;">Review student verification requests and configure the Member Verification page (GR groups, WhatsApp groups, levels, years, rules & text).</p>
+        <div style="display:flex;gap:8px;margin-bottom:18px;">
+          <button class="add-btn" style="margin:0;" id="mvTabReqBtn" onclick="mvSwitchTab('requests')"><i class="fas fa-inbox"></i> Requests</button>
+          <button class="add-btn" style="margin:0;background:#f1f5f9;color:var(--navy);" id="mvTabCfgBtn" onclick="mvSwitchTab('config')"><i class="fas fa-sliders"></i> Page Settings</button>
+        </div>
+        <div id="mvRequestsContent"></div>
+        <div id="mvConfigContent" style="display:none;"></div>
       </div>
 
       <!-- Practice Exams -->
@@ -3277,6 +3294,8 @@ onAuthStateChanged(auth, async user => {
       setupMntFeedbackListener();
       setupContactRequestsListener();
       setupResourceRequestsListener();
+      setupVerifyListener();
+      loadMvConfig();
     } else {
       // ── Not an admin — reject and sign out immediately ──
       await signOut(auth);
@@ -6427,6 +6446,7 @@ window.switchAdminTab=function(tab,el){
   if(tab==='maintenance-admin'){ renderAdminMaintenance(); }
   if(tab==='contact-admin'){ renderAdminContactRequests(); }
   if(tab==='resources-admin'){ renderAdminResourceRequests(); }
+  if(tab==='verify-admin'){ renderAdminVerify(); }
   if(tab==='practice-admin'){ renderAdminPractice(); }
   if(tab==='announcements'){ renderMyAnnounceName(); }
 };
@@ -6434,10 +6454,13 @@ window.switchAdminTab=function(tab,el){
 // Full-access admins (and super-admins) see everything, unchanged from prior behavior.
 window.applyAdminAccessUI = function(){
   if(!currentAdmin || currentAdmin.access !== 'short') return;
-  const allowed = ['announcements','lessons','timetable','makeup'];
+  const allowed = ['announcements','lessons','timetable','makeup','verify-admin'];
   document.querySelectorAll('.adm-nav-item[data-tab]').forEach(item=>{
     if(!allowed.includes(item.dataset.tab)) item.style.display='none';
   });
+  const mvCfgBtn = document.getElementById('mvTabCfgBtn');
+  if(mvCfgBtn) mvCfgBtn.style.display='none';
+  mvActiveTab = 'requests';
   const manualDT = document.getElementById('annManualDateTimeSection');
   if(manualDT) manualDT.style.display='none';
   const editDT = document.getElementById('editAnnDateTimeSection');
@@ -7205,6 +7228,387 @@ window.deleteResourceRequest = async function(id){
 window.clearAllResourceRequests = async function(){
   if(!confirm('Delete all requests?')) return;
   await Promise.all(resourceRequestsList.map(r=>deleteDoc(doc(db,'resourceRequests',r.id))));
+};
+
+/* ══════════════ MEMBER VERIFICATION ══════════════ */
+const MV_DEFAULT_CONFIG = {
+  introRedWarning: "Make sure to request access in the relevant WhatsApp group first, then complete this form.",
+  introFalseInfo: "Any incorrect or false information may result in your application being rejected.",
+  introReviewNote: "Please note that verification may take some time while your information is being reviewed.",
+  grInstruction: "Make sure to choose your group according to the specified format.",
+  waitingMessage: "Thank you for submitting your information.\n\nYour request is currently pending review.\n\nPlease wait while an administrator verifies your information.",
+  rulesWarning: "These rules are strictly enforced. Any violation may result in removal from the group and, where appropriate, further administrative or legal action.",
+  grList: [
+    { id:'gr1', label:'GR1', range:'A to H', instruction:'Students with last names A to H', enabled:true, order:0 },
+    { id:'gr2', label:'GR2', range:'I to Z', instruction:'Students with last names I to Z', enabled:true, order:1 }
+  ],
+  existingGroups: [
+    { id:'eg1', label:'S1 - GR1', enabled:true, order:0 },
+    { id:'eg2', label:'S1 - GR2', enabled:true, order:1 }
+  ],
+  levels: ['S1','S2','S3','S4','S5','S6'].map((l,i)=>({id:l.toLowerCase(),label:l,enabled:true,order:i})),
+  years: [
+    { id:'y2025', label:'2025–2026', enabled:true, order:0 },
+    { id:'y2026', label:'2026–2027', enabled:true, order:1 }
+  ],
+  whatsappGroups: [],
+  rules: [
+    { id:'r1', text:'Stickers are not allowed.', order:0 },
+    { id:'r2', text:'Sharing links from other groups is not allowed.', order:1 },
+    { id:'r3', text:'Harassment, bullying, hate speech, or any form of disrespectful behavior will not be tolerated.', order:2 },
+    { id:'r4', text:'If an admin notices a sticker, group link, or any other violation of these rules, the member may be removed from the group.', order:3 },
+    { id:'r5', text:'Please do not contact admins privately regarding group matters. If you have a question, suggestion, or concern, post it in the group so everyone can participate in the discussion.', order:4 }
+  ]
+};
+let mvConfig = JSON.parse(JSON.stringify(MV_DEFAULT_CONFIG));
+let mvConfigLoaded = false;
+let mvVerifyList = [];
+let mvActiveTab = 'requests';
+
+async function loadMvConfig(){
+  try{
+    const snap = await getDoc(doc(db,'settings','memberVerification'));
+    if(snap.exists()){
+      mvConfig = { ...JSON.parse(JSON.stringify(MV_DEFAULT_CONFIG)), ...snap.data() };
+    } else {
+      await setDoc(doc(db,'settings','memberVerification'), mvConfig);
+    }
+  }catch(e){ console.warn('loadMvConfig error', e); }
+  mvConfigLoaded = true;
+  if(document.getElementById('admin-verify-admin')?.classList.contains('active')) renderAdminVerify();
+}
+let _mvSaveTimer=null;
+function mvSave(){
+  clearTimeout(_mvSaveTimer);
+  _mvSaveTimer = setTimeout(async ()=>{
+    try{ await setDoc(doc(db,'settings','memberVerification'), mvConfig); }
+    catch(e){ console.error('mvSave error', e); alert('Could not save — check your connection.'); }
+  }, 300);
+}
+
+function setupVerifyListener(){
+  onSnapshot(collection(db,'memberVerifications'), snap=>{
+    mvVerifyList = snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+    const badge = document.getElementById('verifyReqBadge');
+    const pendingCount = mvVerifyList.filter(r=>r.status==='pending'||!r.status).length;
+    if(badge){ badge.style.display = pendingCount ? '' : 'none'; badge.textContent = pendingCount; }
+    if(document.getElementById('admin-verify-admin')?.classList.contains('active') && mvActiveTab==='requests') renderMvRequests();
+  });
+}
+
+window.renderAdminVerify = function(){
+  mvSwitchTab(mvActiveTab);
+};
+
+window.mvSwitchTab = function(tab){
+  if(tab==='config' && currentAdmin && currentAdmin.access==='short') return;
+  mvActiveTab = tab;
+  document.getElementById('mvRequestsContent').style.display = tab==='requests' ? 'block' : 'none';
+  document.getElementById('mvConfigContent').style.display = tab==='config' ? 'block' : 'none';
+  const reqBtn = document.getElementById('mvTabReqBtn'), cfgBtn = document.getElementById('mvTabCfgBtn');
+  if(reqBtn && cfgBtn){
+    reqBtn.style.background = tab==='requests' ? '' : '#f1f5f9';
+    reqBtn.style.color = tab==='requests' ? '' : 'var(--navy)';
+    cfgBtn.style.background = tab==='config' ? '' : '#f1f5f9';
+    cfgBtn.style.color = tab==='config' ? '' : 'var(--navy)';
+  }
+  if(tab==='requests') renderMvRequests();
+  else renderMvConfig();
+};
+
+const MV_STATUS_STYLE = {
+  pending:  {bg:'#fef3c7', color:'#92400e', label:'⏳ Pending'},
+  approved: {bg:'#dcfce7', color:'#166534', label:'✅ Approved'},
+  rejected: {bg:'#fee2e2', color:'#991b1b', label:'❌ Rejected'},
+  needs_correction: {bg:'#fee7d6', color:'#9a4a12', label:'✏️ Needs Correction'}
+};
+
+window.renderMvRequests = function(){
+  const el = document.getElementById('mvRequestsContent');
+  if(!el) return;
+  if(!mvVerifyList.length){
+    el.innerHTML = '<p style="color:var(--muted);font-size:13px;text-align:center;padding:24px 0;">No verification requests yet.</p>';
+    return;
+  }
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <h4 style="font-size:14px;color:var(--navy);font-weight:800;">Requests (${mvVerifyList.length})</h4>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      ${mvVerifyList.map(r=>mvRenderRequestCard(r)).join('')}
+    </div>`;
+};
+
+function mvRenderRequestCard(r){
+  const st = MV_STATUS_STYLE[r.status] || MV_STATUS_STYLE.pending;
+  const dt = r.createdAt ? new Date(r.createdAt).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+  return `
+  <div style="background:white;border:1.5px solid var(--border);border-radius:14px;padding:16px 18px;" id="mvcard_${r.id}">
+    <div style="display:flex;gap:14px;flex-wrap:wrap;">
+      <img src="${r.studentCardUrl||''}" onclick="window.open('${r.studentCardUrl||''}','_blank')" style="width:88px;height:60px;object-fit:cover;border-radius:10px;border:1.5px solid var(--border);cursor:pointer;flex-shrink:0;background:#f1f5f9;" title="Click to view full size">
+      <div style="flex:1;min-width:220px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <strong style="font-size:14px;color:var(--navy);" id="mvf_fullName_${r.id}">${escapeHtml(r.fullName||'')}</strong>
+          <span style="background:${st.bg};color:${st.color};font-size:10.5px;font-weight:800;padding:3px 10px;border-radius:100px;">${st.label}</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;margin:6px 0;">
+          <span style="background:#f1f5f9;color:var(--navy);font-size:10px;font-weight:700;padding:2px 8px;border-radius:100px;">${escapeHtml(r.gr||'—')} ${r.grRange?'('+escapeHtml(r.grRange)+')':''}</span>
+          <span style="background:#e0f2fe;color:#0369a1;font-size:10px;font-weight:700;padding:2px 8px;border-radius:100px;">${escapeHtml(r.studentLevel||'—')}</span>
+          <span style="background:#f3e8ff;color:#6d28d9;font-size:10px;font-weight:700;padding:2px 8px;border-radius:100px;">${escapeHtml(r.registrationYear||'—')}</span>
+          <span style="background:#fff0e8;color:var(--gold);font-size:10px;font-weight:700;padding:2px 8px;border-radius:100px;">Massar: ${escapeHtml(r.massarCode||'—')}</span>
+          <span style="background:#e0f2fe;color:#0369a1;font-size:10px;font-weight:700;padding:2px 8px;border-radius:100px;">Apogée: ${escapeHtml(r.apogee||'—')}</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted);">📧 ${escapeHtml(r.email||'')} &nbsp;·&nbsp; 📞 ${escapeHtml(r.mobileNumber||'—')}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">Existing group: ${r.existingGroup==='yes' ? escapeHtml(r.existingGroupName||'Yes') : 'No'} &nbsp;·&nbsp; Wants to join: <strong style="color:var(--navy);">${escapeHtml(r.whatsappGroup||'—')}</strong></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">Submitted: ${dt}</div>
+        ${r.adminComment ? `<div style="font-size:12px;color:#9a4a12;background:#fff6ee;border:1px solid #ffe0c2;border-radius:8px;padding:6px 10px;margin-top:8px;"><i class="fas fa-comment-dots"></i> ${escapeHtml(r.adminComment)}</div>` : ''}
+        <div id="mvedit_${r.id}"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;min-width:140px;">
+        <button onclick="mvSetStatus('${r.id}','approved')" style="padding:7px 12px;background:#22c55e;color:white;border:none;border-radius:9px;cursor:pointer;font-size:11.5px;font-weight:800;">✅ Approve</button>
+        <button onclick="mvSetStatus('${r.id}','rejected')" style="padding:7px 12px;background:#ef4444;color:white;border:none;border-radius:9px;cursor:pointer;font-size:11.5px;font-weight:800;">❌ Reject</button>
+        <button onclick="mvSetStatus('${r.id}','needs_correction')" style="padding:7px 12px;background:#f59e0b;color:white;border:none;border-radius:9px;cursor:pointer;font-size:11.5px;font-weight:800;">✏️ Needs Correction</button>
+        <button onclick="mvToggleEdit('${r.id}')" style="padding:6px 12px;background:#eef2ff;color:#3730a3;border:none;border-radius:9px;cursor:pointer;font-size:11.5px;font-weight:700;">Edit info</button>
+        <button onclick="mvDeleteRequest('${r.id}')" style="padding:6px 12px;background:#fee2e2;color:#991b1b;border:none;border-radius:9px;cursor:pointer;font-size:11.5px;font-weight:700;">Delete</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+window.mvSetStatus = async function(id, status){
+  let comment = '';
+  if(status==='rejected' || status==='needs_correction'){
+    comment = prompt(status==='rejected' ? 'Optional: reason for rejection (shown to the student later).' : 'Optional: what needs to be corrected?') || '';
+  }
+  await updateDoc(doc(db,'memberVerifications',id), { status, adminComment: comment, updatedAt: Date.now() });
+};
+
+window.mvDeleteRequest = async function(id){
+  if(!confirm('Delete this verification request permanently?')) return;
+  await deleteDoc(doc(db,'memberVerifications',id));
+};
+
+window.mvToggleEdit = function(id){
+  const r = mvVerifyList.find(x=>x.id===id);
+  if(!r) return;
+  const box = document.getElementById(`mvedit_${id}`);
+  if(!box) return;
+  if(box.dataset.open==='1'){ box.innerHTML=''; box.dataset.open='0'; return; }
+  box.dataset.open='1';
+  box.innerHTML = `
+    <div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <input id="mve_fullName" value="${escapeHtml(r.fullName||'')}" placeholder="Full name" style="padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12.5px;">
+      <input id="mve_mobileNumber" value="${escapeHtml(r.mobileNumber||'')}" placeholder="Mobile" style="padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12.5px;">
+      <input id="mve_email" value="${escapeHtml(r.email||'')}" placeholder="Email" style="padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12.5px;">
+      <input id="mve_apogee" value="${escapeHtml(r.apogee||'')}" placeholder="Apogée" style="padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12.5px;">
+      <input id="mve_massarCode" value="${escapeHtml(r.massarCode||'')}" placeholder="Massar" style="padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12.5px;">
+      <input id="mve_studentLevel" value="${escapeHtml(r.studentLevel||'')}" placeholder="Level" style="padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12.5px;">
+      <div style="grid-column:1/-1;display:flex;gap:8px;justify-content:flex-end;margin-top:2px;">
+        <button onclick="mvToggleEdit('${id}')" style="padding:6px 12px;background:#e2e8f0;border:none;border-radius:8px;cursor:pointer;font-size:11.5px;font-weight:700;">Cancel</button>
+        <button onclick="mvSaveEdit('${id}')" style="padding:6px 12px;background:var(--navy);color:white;border:none;border-radius:8px;cursor:pointer;font-size:11.5px;font-weight:700;">Save</button>
+      </div>
+    </div>`;
+};
+
+window.mvSaveEdit = async function(id){
+  const fields = ['fullName','mobileNumber','email','apogee','massarCode','studentLevel'];
+  const patch = { updatedAt: Date.now() };
+  fields.forEach(f=>{ const inp = document.getElementById('mve_'+f); if(inp) patch[f] = inp.value.trim(); });
+  await updateDoc(doc(db,'memberVerifications',id), patch);
+  mvToggleEdit(id);
+};
+
+/* ── Config tab ── */
+window.renderMvConfig = function(){
+  const el = document.getElementById('mvConfigContent');
+  if(!el) return;
+  el.innerHTML = `
+    <div style="background:#f8fafc;border:1.5px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:20px;">
+      <h5 style="font-size:13px;color:var(--navy);font-weight:800;margin-bottom:12px;">📝 Page Text</h5>
+      ${mvTextField('introRedWarning','Red warning (top of page)')}
+      ${mvTextField('introFalseInfo','False-information warning')}
+      ${mvTextField('introReviewNote','Review-time note')}
+      ${mvTextField('grInstruction','Instruction above the GR field')}
+      ${mvTextArea('waitingMessage','Pending-review page message')}
+      ${mvTextArea('rulesWarning','Group rules — strong warning')}
+    </div>
+    <div id="mvSecGr"></div>
+    <div id="mvSecEg"></div>
+    <div id="mvSecLvl"></div>
+    <div id="mvSecYear"></div>
+    <div id="mvSecWa"></div>
+    <div id="mvSecRules"></div>
+  `;
+  mvRenderGrSection();
+  mvRenderSimpleSection('existingGroups','mvSecEg','Existing Student Groups','Groups students may already belong to (e.g. "S1 - GR1").');
+  mvRenderSimpleSection('levels','mvSecLvl','Student Levels','e.g. S1, S2, S3...');
+  mvRenderSimpleSection('years','mvSecYear','Academic Years','e.g. 2025–2026');
+  mvRenderWaSection();
+  mvRenderRulesSection();
+};
+
+function mvTextField(key,label){
+  return `<div style="margin-bottom:12px;">
+    <label style="font-size:11.5px;font-weight:700;color:var(--navy);display:block;margin-bottom:4px;">${label}</label>
+    <input value="${escapeHtml(mvConfig[key]||'')}" onblur="mvConfig['${key}']=this.value;mvSave();" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px;">
+  </div>`;
+}
+function mvTextArea(key,label){
+  return `<div style="margin-bottom:4px;">
+    <label style="font-size:11.5px;font-weight:700;color:var(--navy);display:block;margin-bottom:4px;">${label}</label>
+    <textarea onblur="mvConfig['${key}']=this.value;mvSave();" style="width:100%;min-height:70px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px;resize:vertical;">${escapeHtml(mvConfig[key]||'')}</textarea>
+  </div>`;
+}
+
+function mvRowShell(inner, id, idx, len, extraActions){
+  return `<div class="admin-item" style="gap:8px;cursor:default;align-items:center;">
+    <div class="order-btns">
+      <button class="order-btn" onclick="mvMove('${id}',-1)" ${idx===0?'disabled':''}>▲</button>
+      <button class="order-btn" onclick="mvMove('${id}',1)" ${idx===len-1?'disabled':''}>▼</button>
+    </div>
+    <div class="admin-item-info" style="flex:1;min-width:0;">${inner}</div>
+    ${extraActions||''}
+    <div class="admin-item-actions"><button class="del-btn" onclick="mvDeleteItem('${id}')"><i class="fas fa-trash"></i></button></div>
+  </div>`;
+}
+
+let _mvCurrentArrayKey = null; // tracks which array a mvMove/mvDeleteItem call targets (set right before render)
+
+function mvArr(key){ if(!Array.isArray(mvConfig[key])) mvConfig[key]=[]; return mvConfig[key]; }
+function mvSorted(key){ return [...mvArr(key)].sort((a,b)=>(a.order||0)-(b.order||0)); }
+function mvReindex(key){ mvSorted(key).forEach((it,i)=>{ it.order=i; }); }
+
+window.mvMove = function(id, dir){
+  const arr = mvSorted(_mvCurrentArrayKey);
+  const idx = arr.findIndex(x=>x.id===id);
+  if(idx<0) return;
+  const swap = idx+dir;
+  if(swap<0 || swap>=arr.length) return;
+  const a=arr[idx], b=arr[swap];
+  const tmp=a.order; a.order=b.order; b.order=tmp;
+  mvSave();
+  mvRerenderCurrent();
+};
+window.mvDeleteItem = function(id){
+  const key = _mvCurrentArrayKey;
+  mvConfig[key] = mvArr(key).filter(x=>x.id!==id);
+  mvSave();
+  mvRerenderCurrent();
+};
+window.mvToggleItem = function(id){
+  const it = mvArr(_mvCurrentArrayKey).find(x=>x.id===id);
+  if(it){ it.enabled = it.enabled===false ? true : false; mvSave(); mvRerenderCurrent(); }
+};
+function mvRerenderCurrent(){
+  const key=_mvCurrentArrayKey;
+  if(key==='grList') mvRenderGrSection();
+  else if(key==='existingGroups') mvRenderSimpleSection('existingGroups','mvSecEg','Existing Student Groups','Groups students may already belong to (e.g. "S1 - GR1").');
+  else if(key==='levels') mvRenderSimpleSection('levels','mvSecLvl','Student Levels','e.g. S1, S2, S3...');
+  else if(key==='years') mvRenderSimpleSection('years','mvSecYear','Academic Years','e.g. 2025–2026');
+  else if(key==='whatsappGroups') mvRenderWaSection();
+  else if(key==='rules') mvRenderRulesSection();
+}
+function mvNewId(prefix){ return prefix+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+
+function mvRenderGrSection(){
+  _mvCurrentArrayKey='grList';
+  const el = document.getElementById('mvSecGr'); if(!el) return;
+  const rows = mvSorted('grList');
+  el.innerHTML = `
+  <div style="background:white;border:1.5px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:18px;">
+    <h5 style="font-size:13px;color:var(--navy);font-weight:800;margin-bottom:4px;">🎓 GR Groups</h5>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Add, edit, reorder, or disable GR options. No code changes needed.</p>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+      ${rows.length ? rows.map((g,i)=>mvRowShell(`
+        <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:6px;">
+          <input value="${escapeHtml(g.label||'')}" placeholder="Label (e.g. GR3)" onblur="mvSetField('grList','${g.id}','label',this.value)" style="padding:6px 9px;border:1px solid var(--border);border-radius:7px;font-size:12.5px;font-weight:700;">
+          <input value="${escapeHtml(g.range||'')}" placeholder="Range (e.g. A to H)" onblur="mvSetField('grList','${g.id}','range',this.value)" style="padding:6px 9px;border:1px solid var(--border);border-radius:7px;font-size:12.5px;">
+          <input value="${escapeHtml(g.instruction||'')}" placeholder="Instruction" onblur="mvSetField('grList','${g.id}','instruction',this.value)" style="padding:6px 9px;border:1px solid var(--border);border-radius:7px;font-size:12.5px;">
+        </div>`, g.id, i, rows.length, `<label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);white-space:nowrap;"><input type="checkbox" ${g.enabled!==false?'checked':''} onchange="mvToggleItem('${g.id}')"> Enabled</label>`)).join('')
+        : '<p style="font-size:12px;color:var(--muted);font-style:italic;">No GR groups yet.</p>'}
+    </div>
+    <button class="add-btn" style="margin:0;" onclick="mvAddGr()"><i class="fas fa-plus"></i> Add GR</button>
+  </div>`;
+}
+window.mvAddGr = function(){
+  mvArr('grList').push({ id:mvNewId('gr'), label:'GR'+(mvArr('grList').length+1), range:'', instruction:'', enabled:true, order: mvArr('grList').length });
+  mvSave(); mvRenderGrSection();
+};
+window.mvSetField = function(key, id, field, value){
+  const it = mvArr(key).find(x=>x.id===id);
+  if(it){ it[field]=value; mvSave(); }
+};
+
+function mvRenderSimpleSection(key, containerId, title, hint){
+  _mvCurrentArrayKey = key;
+  const el = document.getElementById(containerId); if(!el) return;
+  const rows = mvSorted(key);
+  el.innerHTML = `
+  <div style="background:white;border:1.5px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:18px;">
+    <h5 style="font-size:13px;color:var(--navy);font-weight:800;margin-bottom:4px;">${title}</h5>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">${hint}</p>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+      ${rows.length ? rows.map((it,i)=>mvRowShell(
+        `<input value="${escapeHtml(it.label||'')}" onblur="mvSetField('${key}','${it.id}','label',this.value)" style="padding:6px 9px;border:1px solid var(--border);border-radius:7px;font-size:12.5px;font-weight:600;width:100%;max-width:260px;">`,
+        it.id, i, rows.length,
+        `<label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);white-space:nowrap;"><input type="checkbox" ${it.enabled!==false?'checked':''} onchange="mvToggleItem('${it.id}')"> Enabled</label>`
+      )).join('') : `<p style="font-size:12px;color:var(--muted);font-style:italic;">Nothing added yet.</p>`}
+    </div>
+    <button class="add-btn" style="margin:0;" onclick="mvAddSimple('${key}')"><i class="fas fa-plus"></i> Add</button>
+  </div>`;
+}
+window.mvAddSimple = function(key){
+  const label = prompt('Label:'); if(!label) return;
+  mvArr(key).push({ id:mvNewId(key), label:label.trim(), enabled:true, order: mvArr(key).length });
+  mvSave();
+  mvRerenderCurrent();
+};
+
+function mvRenderWaSection(){
+  _mvCurrentArrayKey='whatsappGroups';
+  const el = document.getElementById('mvSecWa'); if(!el) return;
+  const rows = mvSorted('whatsappGroups');
+  el.innerHTML = `
+  <div style="background:white;border:1.5px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:18px;">
+    <h5 style="font-size:13px;color:var(--navy);font-weight:800;margin-bottom:4px;">💬 WhatsApp Groups</h5>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">These are the groups students can request to join on the verification form.</p>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+      ${rows.length ? rows.map((g,i)=>mvRowShell(`
+        <div style="display:grid;grid-template-columns:1fr 1.4fr 1.4fr;gap:6px;">
+          <input value="${escapeHtml(g.name||'')}" placeholder="Name (e.g. S1 - GR1)" onblur="mvSetField('whatsappGroups','${g.id}','name',this.value)" style="padding:6px 9px;border:1px solid var(--border);border-radius:7px;font-size:12.5px;font-weight:700;">
+          <input value="${escapeHtml(g.link||'')}" placeholder="WhatsApp link" onblur="mvSetField('whatsappGroups','${g.id}','link',this.value)" style="padding:6px 9px;border:1px solid var(--border);border-radius:7px;font-size:12.5px;">
+          <input value="${escapeHtml(g.description||'')}" placeholder="Description (optional)" onblur="mvSetField('whatsappGroups','${g.id}','description',this.value)" style="padding:6px 9px;border:1px solid var(--border);border-radius:7px;font-size:12.5px;">
+        </div>`, g.id, i, rows.length, `<label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);white-space:nowrap;"><input type="checkbox" ${g.enabled!==false?'checked':''} onchange="mvToggleItem('${g.id}')"> Enabled</label>`)).join('')
+        : '<p style="font-size:12px;color:var(--muted);font-style:italic;">No WhatsApp groups yet — students will see "no groups configured".</p>'}
+    </div>
+    <button class="add-btn" style="margin:0;" onclick="mvAddWa()"><i class="fas fa-plus"></i> Add Group</button>
+  </div>`;
+}
+window.mvAddWa = function(){
+  mvArr('whatsappGroups').push({ id:mvNewId('wa'), name:'New Group', link:'', description:'', enabled:true, order: mvArr('whatsappGroups').length });
+  mvSave(); mvRenderWaSection();
+};
+
+function mvRenderRulesSection(){
+  _mvCurrentArrayKey='rules';
+  const el = document.getElementById('mvSecRules'); if(!el) return;
+  const rows = [...mvArr('rules')].sort((a,b)=>(a.order||0)-(b.order||0));
+  el.innerHTML = `
+  <div style="background:white;border:1.5px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:18px;">
+    <h5 style="font-size:13px;color:var(--navy);font-weight:800;margin-bottom:4px;">📜 Group Rules</h5>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Shown on the verification page as a numbered list, plus the strong warning above.</p>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+      ${rows.length ? rows.map((r,i)=>mvRowShell(
+        `<input value="${escapeHtml(r.text||'')}" onblur="mvSetField('rules','${r.id}','text',this.value)" style="padding:6px 9px;border:1px solid var(--border);border-radius:7px;font-size:12.5px;width:100%;">`,
+        r.id, i, rows.length
+      )).join('') : '<p style="font-size:12px;color:var(--muted);font-style:italic;">No rules yet.</p>'}
+    </div>
+    <button class="add-btn" style="margin:0;" onclick="mvAddRule()"><i class="fas fa-plus"></i> Add Rule</button>
+  </div>`;
+}
+window.mvAddRule = function(){
+  mvArr('rules').push({ id:mvNewId('rule'), text:'New rule', order: mvArr('rules').length });
+  mvSave(); mvRenderRulesSection();
 };
 
 window.renderAdminMaintenance = function(){
