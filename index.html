@@ -7,6 +7,8 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Outfit:wght@300;400;500;600;700;800&family=Cormorant+Garamond:wght@600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&family=Sora:wght@300;400;600;700&family=Playfair+Display:wght@700;900&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
   <style>
 /* ═══════════════════════════════════════════════════════
    MERIDIAN — Complete Redesign v3.0
@@ -1966,7 +1968,10 @@ footer::after{
   <main>
     <div class="sec-header" style="margin-top:8px;"><h2><i class="fas fa-calendar-week"></i> Class Timetable</h2><p>Weekly schedule — subject to change</p><div class="section-divider"></div></div>
     <div class="info-alert"><i class="fas fa-info-circle"></i> The timetable may be updated by the admin. Please check back regularly.</div>
-    <div class="sem-tabs" id="ttSemTabs"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;">
+      <div class="sem-tabs" id="ttSemTabs" style="margin-bottom:0;"></div>
+      <button class="add-btn" style="margin:0;" onclick="downloadTimetablePDF()"><i class="fas fa-file-pdf"></i> Download as PDF</button>
+    </div>
     <div id="ttView"></div>
   </main>
 </div>
@@ -2438,6 +2443,7 @@ footer::after{
         <p style="font-size:12.5px;color:var(--muted);margin-bottom:18px;">Manage weekly class rows for GR1 and GR2 across all semesters.</p>
         <button class="add-btn" onclick="openModal('addTTModal')"><i class="fas fa-plus"></i> Add Class Row</button>
         <p style="font-size:12px;color:var(--muted);margin-bottom:12px;"><i class="fas fa-grip-vertical"></i> Drag to reorder rows</p>
+        <div class="sem-tabs" id="ttAdminSemTabs" style="margin-bottom:16px;"></div>
         <div id="adminTTList"></div>
       </div>
 
@@ -3039,7 +3045,7 @@ const LINKS = {
 let currentGroup='GR1', adminUnlocked=false, currentAdmin=null;
 let studentLoggedIn=false, currentStudent=null;
 let curModSem='S1', curExamSem='S1', curTTSem='S1';
-let lesAdminSem='S1', exAdminSem='S1';
+let lesAdminSem='S1', exAdminSem='S1', ttAdminSem=null;
 let announcements=[], makeupSessions=[], timetable=[], lessons=[], exams=[], spaceLinks=[];
 // Site settings stored in Firebase
 let siteSettings = {
@@ -5296,6 +5302,28 @@ function renderTimetable(sem){
 }
 window.showTTSem=function(sem,el){document.querySelectorAll('#ttSemTabs .sem-tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');renderTimetable(sem);};
 
+window.downloadTimetablePDF=function(){
+  const rows=timetable.filter(r=>r.gr===currentGroup&&r.sem===curTTSem);
+  if(!rows.length){ alert('There is no timetable data for this semester yet.'); return; }
+  if(!(window.jspdf&&window.jspdf.jsPDF)){ alert('PDF library failed to load. Please check your internet connection and try again.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation:'landscape', unit:'pt', format:'a4' });
+  const showRoom=siteSettings.ttColumns.room!==false;
+  const showProf=siteSettings.ttColumns.prof!==false;
+  const head=[['Day','Module','Time', ...(showRoom?['Room']:[]), ...(showProf?['Professor']:[])]];
+  const body=rows.map(r=>[r.day, r.module, r.time, ...(showRoom?[r.room||'—']:[]), ...(showProf?[r.prof||'—']:[])]);
+  const title=`Class Timetable — ${currentGroup} — ${curTTSem}`;
+  doc.setFontSize(16);
+  doc.text(title, 40, 40);
+  doc.autoTable({
+    head, body, startY:60,
+    styles:{ fontSize:10, cellPadding:6 },
+    headStyles:{ fillColor:[18,22,58], textColor:255, fontStyle:'bold' },
+    alternateRowStyles:{ fillColor:[250,249,247] }
+  });
+  doc.save(`Timetable_${currentGroup}_${curTTSem}.pdf`);
+};
+
 function renderTTSemTabs(){
   const sems=['S1','S2','S3','S4','S5','S6'];
   const visible=sems.filter(s=>!(siteSettings.hiddenTTSems||[]).includes(s));
@@ -5784,7 +5812,7 @@ async function moveItem(col, arr, id, dir){
 }
 
 // ══ ADMIN RENDERS ══
-function renderAdminPanel(){ renderAdminAnn(); renderAdminLessonSemTabs(); renderAdminLessons(lesAdminSem); renderAdminExamSemTabs(); renderAdminExams(exAdminSem); renderAdminTT(); renderAdminMakeup(); }
+function renderAdminPanel(){ renderAdminAnn(); renderAdminLessonSemTabs(); renderAdminLessons(lesAdminSem); renderAdminExamSemTabs(); renderAdminExams(exAdminSem); renderAdminTTSemTabs(); renderAdminTT(); renderAdminMakeup(); }
 
 async function saveSettings(){
   await setDoc(doc(db,'settings','main'),siteSettings);
@@ -6474,14 +6502,25 @@ window.applyAdminAccessUI = function(){
 function renderAdminAnn(){
   const el=document.getElementById('adminAnnList');
   const adminGR = (currentAdmin && currentAdmin.role !== 'Both') ? currentAdmin.role : null;
-  const visible = announcements.filter(a=>!adminGR || a.group==='Both' || a.group===adminGR);
-  if(!visible.length){el.innerHTML='<p style="color:var(--muted);font-size:13px;">No announcements.</p>';return;}
+  const isFullAccess = !(currentAdmin && currentAdmin.access==='short');
+  let visible = announcements.filter(a=>!adminGR || a.group==='Both' || a.group===adminGR);
+  // Short-access admins only see the updates they created themselves
+  if(!isFullAccess){
+    visible = visible.filter(a=>currentAdmin && a.createdByEmail===currentAdmin.email);
+  }
+  if(!visible.length){el.innerHTML=`<p style="color:var(--muted);font-size:13px;">${isFullAccess?'No announcements.':'You have not posted any announcements yet.'}</p>`;return;}
   const logoIco = siteSettings.pubIcon||'fas fa-university';
   el.innerHTML=visible.map((a,idx)=>{
     const dt=[a.date,a.time].filter(Boolean).join(' ');
     const isFirst=idx===0, isLast=idx===visible.length-1;
     const grColor=a.group==='GR1'?'#dbeafe':a.group==='GR2'?'#dcfce7':'#f1f5f9';
     const grText=a.group==='GR1'?'#1e40af':a.group==='GR2'?'#166534':'#475569';
+    // Full-access admins can edit/remove anything (including others' posts);
+    // short-access admins may only manage what they personally created.
+    const canEdit = isFullAccess || (currentAdmin && a.createdByEmail===currentAdmin.email);
+    const editBtns = canEdit ? `
+        <button class="edit-btn" onclick="event.stopPropagation();openEditAnn('${a.id}')"><i class="fas fa-pen"></i></button>
+        <button class="del-btn" onclick="event.stopPropagation();deleteAnn('${a.id}')"><i class="fas fa-trash"></i></button>` : '';
     return `<div class="admin-item" data-id="${a.id}">
       <div class="order-btns">
         <button class="order-btn" onclick="moveAnn('${a.id}',-1)" ${isFirst?'disabled':''}>▲</button>
@@ -6499,9 +6538,7 @@ function renderAdminAnn(){
         <span>${dt} · <span style="background:${grColor};color:${grText};padding:1px 7px;border-radius:100px;font-weight:700;font-size:11px;">${a.group}</span> <span style="background:#eef2ff;color:#3730a3;padding:1px 7px;border-radius:100px;font-weight:700;font-size:11px;">${a.sem||'S1'}</span>${a.postedBy?` · ✍️ ${escapeHtml(a.postedBy)}`:''} · ${a.type} · 👁 ${a.views||0} · ❤️ ${a.likes||0}${a.targetStudents&&a.targetStudents.length?` · <span style="color:var(--royal);font-weight:800;">🎯 ${a.targetStudents.length} targeted</span>`:''}</span>
       </div>
       <div class="admin-item-actions" style="position:relative;z-index:10;">
-        <button class="edit-btn" title="Engagement" onclick="event.stopPropagation();showAnnEngagement('${a.id}','${(a.title||'').replace(/'/g,"\\'")}')"><i class="fas fa-chart-bar"></i></button>
-        <button class="edit-btn" onclick="event.stopPropagation();openEditAnn('${a.id}')"><i class="fas fa-pen"></i></button>
-        <button class="del-btn" onclick="event.stopPropagation();deleteAnn('${a.id}')"><i class="fas fa-trash"></i></button>
+        <button class="edit-btn" title="Engagement" onclick="event.stopPropagation();showAnnEngagement('${a.id}','${(a.title||'').replace(/'/g,"\\'")}')"><i class="fas fa-chart-bar"></i></button>${editBtns}
       </div>
     </div>`;
   }).join('');
@@ -6575,11 +6612,30 @@ function renderAdminExams(sem){
 }
 window.toggleAdminMod=function(id){document.getElementById(id).classList.toggle('open');};
 
+window.switchTTAdminSem=function(sem,el){
+  document.querySelectorAll('#ttAdminSemTabs .sem-tab').forEach(t=>t.classList.remove('active'));
+  if(el) el.classList.add('active');
+  ttAdminSem=sem;
+  renderAdminTT();
+};
+function renderAdminTTSemTabs(){
+  const cont=document.getElementById('ttAdminSemTabs');
+  if(!cont) return;
+  // Full-access admins only: short-access admins never see this configuration tab
+  if(currentAdmin && currentAdmin.access==='short'){ cont.innerHTML=''; cont.style.display='none'; return; }
+  cont.style.display='';
+  const sems=['S1','S2','S3','S4','S5','S6'].filter(s=>!(siteSettings.hiddenTTSems||[]).includes(s));
+  if(!sems.length){ cont.innerHTML=''; return; }
+  if(!ttAdminSem||!sems.includes(ttAdminSem)) ttAdminSem=sems[0];
+  cont.innerHTML=sems.map(s=>`<div class="sem-tab${s===ttAdminSem?' active':''}" onclick="switchTTAdminSem('${s}',this)">${s}</div>`).join('');
+}
 function renderAdminTT(){
   const el=document.getElementById('adminTTList');let html='';
   const adminGR = (currentAdmin && currentAdmin.role !== 'Both') ? currentAdmin.role : null;
   const groups = adminGR ? [adminGR] : ['GR1','GR2'];
-  groups.forEach(gr=>['S1','S2','S3','S4','S5','S6'].filter(s=>!(siteSettings.hiddenTTSems||[]).includes(s)).forEach(sem=>{
+  const isFullAccess = !(currentAdmin && currentAdmin.access==='short');
+  const semsToShow = (isFullAccess && ttAdminSem) ? [ttAdminSem] : ['S1','S2','S3','S4','S5','S6'];
+  groups.forEach(gr=>semsToShow.filter(s=>!(siteSettings.hiddenTTSems||[]).includes(s)).forEach(sem=>{
     const rows=timetable.filter(r=>r.gr===gr&&r.sem===sem);
     if(rows.length){
       html+=`<div style="margin-bottom:16px;"><strong style="font-size:13px;color:var(--navy);">${gr} · ${sem}</strong><div style="margin-top:8px;">`;
@@ -6664,6 +6720,10 @@ window.openAddExam=function(sem){document.getElementById('examSemInput').value=s
 
 window.openEditAnn=function(id){
   const a=announcements.find(x=>x.id===id); if(!a) return;
+  const isFullAccess = !(currentAdmin && currentAdmin.access==='short');
+  if(!isFullAccess && !(currentAdmin && a.createdByEmail===currentAdmin.email)){
+    alert('You can only edit updates that you created yourself.'); return;
+  }
   document.getElementById('editAnnId').value=id;
   document.getElementById('editAnnTitle').value=a.title||'';
   document.getElementById('editAnnGroup').value=a.group||'Both';
@@ -6937,6 +6997,7 @@ window.saveAnn=async function(){
       order: announcements.length ? Math.min(...announcements.map(a=>a.order??0)) - 1 : 0,
       views:0,likes:0,imgUrl:'',
       postedBy: (currentAdmin && siteSettings.adminAnnounceNames && siteSettings.adminAnnounceNames[currentAdmin.email]) || (currentAdmin ? currentAdmin.name : '') || '',
+      createdByEmail: (currentAdmin && currentAdmin.email) || '',
       targetStudents: targetStudents.length ? targetStudents : []
     });
     if(file){
@@ -6960,7 +7021,14 @@ window.saveAnn=async function(){
     if(saveBtn){ saveBtn.disabled=false; saveBtn.textContent='Add'; }
   }
 };
-window.deleteAnn=async function(id){if(!confirm('Delete?'))return;await deleteDoc(doc(db,'announcements',id));};
+window.deleteAnn=async function(id){
+  const a=announcements.find(x=>x.id===id);
+  const isFullAccess = !(currentAdmin && currentAdmin.access==='short');
+  if(a && !isFullAccess && !(currentAdmin && a.createdByEmail===currentAdmin.email)){
+    alert('You can only remove updates that you created yourself.'); return;
+  }
+  if(!confirm('Delete?'))return;await deleteDoc(doc(db,'announcements',id));
+};
 window.saveLesson=async function(){
   const name=document.getElementById('lessonNameInput').value.trim();
   const url=document.getElementById('lessonUrlInput').value.trim();
