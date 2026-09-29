@@ -7392,7 +7392,7 @@ const MV_STATUS_STYLE = {
 };
 
 /* ── Search + GR filter + Status filter (Member Verification) ── */
-let mvSearch = '', mvGrFilter = 'all', mvStatusFilter = 'all', mvGrOpts = [];
+let mvSearch = '', mvGrFilter = 'all', mvStatusFilter = 'all', mvLevelFilter = 'all', mvGrOpts = [], mvLvlOpts = [], mvLvlOpen = false;
 const MV_STATUS_ORDER = ['pending','needs_correction','approved','rejected'];
 const mvNorm = s => String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
 const mvDigits = s => String(s==null?'':s).replace(/\D/g,'');
@@ -7413,6 +7413,15 @@ function mvMatchesSearch(r, q){
   return false;
 }
 function mvPassGr(r){ return mvGrFilter==='all' || mvNorm(r.gr)===mvGrFilter; }
+function mvPassLevel(r){ return mvLevelFilter==='all' || mvNorm(r.studentLevel)===mvLevelFilter; }
+function mvBuildLevelOptions(){
+  const seen = new Set(), out = [];
+  mvSorted('levels').forEach(l=>{ const k = mvNorm(l.label); if(k && !seen.has(k)){ seen.add(k); out.push({key:k,label:l.label}); } });
+  const extra = [];
+  mvVerifyList.forEach(r=>{ const k = mvNorm(r.studentLevel); if(k && !seen.has(k)){ seen.add(k); extra.push({key:k,label:r.studentLevel}); } });
+  extra.sort((a,b)=>a.label.localeCompare(b.label,undefined,{numeric:true}));
+  mvLvlOpts = out.concat(extra);
+}
 function mvPassStatus(r){ return mvStatusFilter==='all' || mvStatusOf(r)===mvStatusFilter; }
 
 function mvBuildGrOptions(){
@@ -7430,6 +7439,14 @@ window.mvSetSearch = function(v){ mvSearch = v; mvRefreshList(); };
 window.mvClearSearch = function(){ const i=document.getElementById('mvSearchInput'); if(i){ i.value=''; i.focus(); } mvSearch=''; mvRefreshList(); };
 window.mvSetGr = function(i){ mvGrFilter = i<0 ? 'all' : (mvGrOpts[i] ? mvGrOpts[i].key : 'all'); mvRefreshList(); };
 window.mvSetStatusFilter = function(s){ mvStatusFilter = s; mvRefreshList(); };
+window.mvSetLevel = function(i){ mvLevelFilter = i<0 ? 'all' : (mvLvlOpts[i] ? mvLvlOpts[i].key : 'all'); mvLvlOpen = false; mvRefreshList(); };
+window.mvToggleLvl = function(e){ if(e) e.stopPropagation(); mvLvlOpen = !mvLvlOpen; const m=document.getElementById('mvLvlMenu'); if(m) m.style.display = mvLvlOpen ? 'block' : 'none'; };
+if(!window._mvLvlOutside){
+  window._mvLvlOutside = true;
+  document.addEventListener('click', e=>{
+    if(mvLvlOpen && !e.target.closest('#mvLvlWrap')){ mvLvlOpen=false; const m=document.getElementById('mvLvlMenu'); if(m) m.style.display='none'; }
+  });
+}
 
 window.renderMvRequests = function(){
   const el = document.getElementById('mvRequestsContent');
@@ -7445,7 +7462,12 @@ window.renderMvRequests = function(){
         <div style="font-size:10.5px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px;">Group</div>
         <div id="mvGrChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;"></div>
         <div style="font-size:10.5px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px;">Status</div>
-        <div id="mvStatusChips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+        <div id="mvStatusChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;"></div>
+        <div style="font-size:10.5px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px;">Level</div>
+        <div id="mvLvlWrap" style="position:relative;display:inline-block;">
+          <button id="mvLvlBtn" onclick="mvToggleLvl(event)"></button>
+          <div id="mvLvlMenu" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:40;min-width:210px;max-height:280px;overflow-y:auto;background:white;border:1.5px solid var(--border);border-radius:12px;box-shadow:0 10px 28px rgba(18,22,58,.16);padding:6px;"></div>
+        </div>
       </div>
       <div id="mvList"></div>`;
   }
@@ -7455,25 +7477,39 @@ window.renderMvRequests = function(){
 function mvRefreshList(){
   const listEl = document.getElementById('mvList');
   if(!listEl) return;
-  mvBuildGrOptions();
+  mvBuildGrOptions(); mvBuildLevelOptions();
+  if(mvLevelFilter!=='all' && !mvLvlOpts.some(o=>o.key===mvLevelFilter)) mvLevelFilter='all';
   if(mvGrFilter!=='all' && !mvGrOpts.some(o=>o.key===mvGrFilter)) mvGrFilter='all';
 
   // GR chips (counts respect search + status)
-  const baseForGr = mvVerifyList.filter(r=>mvMatchesSearch(r,mvSearch) && mvPassStatus(r));
+  const baseForGr = mvVerifyList.filter(r=>mvMatchesSearch(r,mvSearch) && mvPassStatus(r) && mvPassLevel(r));
   const grEl = document.getElementById('mvGrChips');
   if(grEl){
     grEl.innerHTML = mvChip('All', baseForGr.length, mvGrFilter==='all', 'mvSetGr(-1)') +
       mvGrOpts.map((o,i)=>mvChip(escapeHtml(o.label), baseForGr.filter(r=>mvNorm(r.gr)===o.key).length, mvGrFilter===o.key, `mvSetGr(${i})`)).join('');
   }
   // Status chips (counts respect search + GR)
-  const baseForSt = mvVerifyList.filter(r=>mvMatchesSearch(r,mvSearch) && mvPassGr(r));
+  const baseForSt = mvVerifyList.filter(r=>mvMatchesSearch(r,mvSearch) && mvPassGr(r) && mvPassLevel(r));
+  // Level dropdown (counts respect search + GR + status)
+  const baseForLv = mvVerifyList.filter(r=>mvMatchesSearch(r,mvSearch) && mvPassGr(r) && mvPassStatus(r));
+  const lvBtn = document.getElementById('mvLvlBtn'), lvMenu = document.getElementById('mvLvlMenu');
+  if(lvBtn && lvMenu){
+    const cur = mvLvlOpts.find(o=>o.key===mvLevelFilter);
+    const on = mvLevelFilter!=='all';
+    lvBtn.style.cssText = `display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:800;border:1.5px solid ${on?'var(--navy)':'var(--border)'};background:${on?'var(--navy)':'white'};color:${on?'white':'var(--navy)'};`;
+    lvBtn.innerHTML = `<i class="fas fa-layer-group"></i> ${on ? escapeHtml(cur?cur.label:'') : 'All levels'} <i class="fas fa-chevron-down" style="font-size:10px;"></i>`;
+    const item = (label,count,active,fn)=>`<button onclick="${fn}" style="display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:9px 12px;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:${active?800:600};background:${active?'#eef2ff':'transparent'};color:var(--navy);text-align:left;"><span>${active?'✓ ':''}${label}</span><span style="background:#f1f5f9;color:var(--muted);font-size:10.5px;padding:1px 8px;border-radius:100px;">${count}</span></button>`;
+    lvMenu.innerHTML = item('All levels', baseForLv.length, !on, 'mvSetLevel(-1)') +
+      mvLvlOpts.map((o,i)=>item(escapeHtml(o.label), baseForLv.filter(r=>mvNorm(r.studentLevel)===o.key).length, mvLevelFilter===o.key, `mvSetLevel(${i})`)).join('');
+    lvMenu.style.display = mvLvlOpen ? 'block' : 'none';
+  }
   const stEl = document.getElementById('mvStatusChips');
   if(stEl){
     stEl.innerHTML = mvChip('All', baseForSt.length, mvStatusFilter==='all', "mvSetStatusFilter('all')") +
       MV_STATUS_ORDER.map(s=>mvChip(MV_STATUS_STYLE[s].label, baseForSt.filter(r=>mvStatusOf(r)===s).length, mvStatusFilter===s, `mvSetStatusFilter('${s}')`, MV_STATUS_STYLE[s].color)).join('');
   }
 
-  const filtered = mvVerifyList.filter(r=>mvMatchesSearch(r,mvSearch) && mvPassGr(r) && mvPassStatus(r));
+  const filtered = mvVerifyList.filter(r=>mvMatchesSearch(r,mvSearch) && mvPassGr(r) && mvPassStatus(r) && mvPassLevel(r));
   const head = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
       <h4 style="font-size:14px;color:var(--navy);font-weight:800;">Requests (${filtered.length}${filtered.length!==mvVerifyList.length?' of '+mvVerifyList.length:''})</h4>
     </div>`;
