@@ -2943,7 +2943,7 @@ footer::after{
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, onSnapshot, updateDoc, writeBatch, increment, setDoc, getDoc, query, where, orderBy } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, setPersistence, inMemoryPersistence } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 // ══ ADMIN OVERLAY LOGIN (admin.html specific) ══
 window.doAdminOverlayLogin = async function(){
@@ -2994,9 +2994,10 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
-// Require login again on every refresh (for both students and admins) — don't
-// persist the session across page reloads.
-setPersistence(auth, inMemoryPersistence).catch(()=>{});
+// Keep the session across page refreshes (F5). Session persistence = survives reload,
+// but is cleared when the tab/browser is closed. Auto-logout after 5 min of
+// inactivity is handled below (ADMIN_IDLE_MS).
+setPersistence(auth, browserSessionPersistence).catch(()=>{});
 const CLOUDINARY_CLOUD = 'dl8ibag5f';
 const CLOUDINARY_PRESET = 'English Studies';
 
@@ -3275,6 +3276,32 @@ window.doLogin = async function(){
 };
 document.getElementById('loginPassword').addEventListener('keydown',e=>{if(e.key==='Enter')window.doLogin();});
 
+// ══ ADMIN IDLE AUTO-LOGOUT (5 min without any activity) ══
+const ADMIN_IDLE_MS = 5*60*1000;
+const ADMIN_ACT_KEY = 'adm_last_activity';
+const ADMIN_IDLE_FLAG = 'adm_idle_logout';
+let _lastActWrite = 0;
+function touchAdminActivity(force){
+  const now = Date.now();
+  if(!force && now-_lastActWrite < 1000) return;   // throttle writes
+  _lastActWrite = now;
+  try{ sessionStorage.setItem(ADMIN_ACT_KEY, String(now)); }catch(e){}
+}
+['mousemove','mousedown','keydown','wheel','scroll','touchstart','touchmove','click','pointerdown'].forEach(ev=>{
+  window.addEventListener(ev, ()=>touchAdminActivity(false), {passive:true, capture:true});
+});
+function checkAdminIdle(){
+  if(!adminUnlocked) return;
+  const last = parseInt(sessionStorage.getItem(ADMIN_ACT_KEY)||'0',10) || Date.now();
+  if(Date.now()-last > ADMIN_IDLE_MS){
+    sessionStorage.setItem(ADMIN_IDLE_FLAG,'1');
+    signOut(auth);
+  }
+}
+setInterval(checkAdminIdle, 10000);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) checkAdminIdle(); });
+window.addEventListener('focus', checkAdminIdle);
+
 onAuthStateChanged(auth, async user => {
   if(user){
     const emailKey = user.email.toLowerCase();
@@ -3282,6 +3309,14 @@ onAuthStateChanged(auth, async user => {
     const allAdmins = getAllAdmins();
     const acc = allAdmins[emailKey];
     if(acc){
+      // ── Restored/new session: if the admin was idle > 5 min (e.g. laptop asleep, old tab), log out ──
+      const _last = parseInt(sessionStorage.getItem(ADMIN_ACT_KEY)||'0',10);
+      if(_last && Date.now()-_last > ADMIN_IDLE_MS){
+        sessionStorage.setItem(ADMIN_IDLE_FLAG,'1');
+        await signOut(auth);
+        return;
+      }
+      touchAdminActivity(true);
       // ── Admin login ──
       adminUnlocked=true;
       currentAdmin={email:user.email, name:acc.name, role:acc.role, access: acc.isSuperAdmin ? 'full' : (acc.access || 'full')};
@@ -3338,10 +3373,16 @@ onAuthStateChanged(auth, async user => {
     // Clear overlay password (email stays so admin can retry quickly)
     const admPw = document.getElementById('admPassword');
     if(admPw) admPw.value='';
+    // Idle auto-logout notice
+    if(sessionStorage.getItem(ADMIN_IDLE_FLAG)){
+      sessionStorage.removeItem(ADMIN_IDLE_FLAG);
+      const ie = document.getElementById('admLoginErr');
+      if(ie){ ie.textContent = '⏱️ You were logged out after 5 minutes of inactivity. Please log in again.'; ie.style.display='block'; }
+    }
   }
 });
 
-window.logoutAdmin=function(){ signOut(auth); };
+window.logoutAdmin=function(){ try{ sessionStorage.removeItem(ADMIN_ACT_KEY); }catch(e){} signOut(auth); };
 
 // ══ REALTIME LISTENERS ══
 function setupListeners(){
