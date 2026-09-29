@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ES Admin Panel · FLSHM</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#12163a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="ES Admin">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Outfit:wght@300;400;500;600;700;800&family=Cormorant+Garamond:wght@600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&family=Sora:wght@300;400;600;700&family=Playfair+Display:wght@700;900&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -2575,6 +2581,7 @@ footer::after{
       <div class="admin-section-content" id="admin-verify-admin">
         <h2 style="font-family:var(--theme-font-display);font-size:20px;font-weight:800;color:var(--navy);margin-bottom:4px;letter-spacing:-.3px;">🪪 Member Verification</h2>
         <p style="font-size:12.5px;color:var(--muted);margin-bottom:18px;">Review student verification requests and configure the Member Verification page (GR groups, WhatsApp groups, levels, years, rules & text).</p>
+        <div id="mvPushCard"></div>
         <div style="display:flex;gap:8px;margin-bottom:18px;">
           <button class="add-btn" style="margin:0;" id="mvTabReqBtn" onclick="mvSwitchTab('requests')"><i class="fas fa-inbox"></i> Requests</button>
           <button class="add-btn" style="margin:0;background:#f1f5f9;color:var(--navy);" id="mvTabCfgBtn" onclick="mvSwitchTab('config')"><i class="fas fa-sliders"></i> Page Settings</button>
@@ -2943,6 +2950,7 @@ footer::after{
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, onSnapshot, updateDoc, writeBatch, increment, setDoc, getDoc, query, where, orderBy } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getMessaging, getToken, deleteToken, onMessage, isSupported as fcmSupported } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 // ══ ADMIN OVERLAY LOGIN (admin.html specific) ══
@@ -3276,6 +3284,130 @@ window.doLogin = async function(){
 };
 document.getElementById('loginPassword').addEventListener('keydown',e=>{if(e.key==='Enter')window.doLogin();});
 
+// ══ PUSH NOTIFICATIONS — NEW MEMBER VERIFICATION (works even when logged out) ══
+// 1) Firebase Console → Project settings → Cloud Messaging → Web Push certificates → "Generate key pair"
+// 2) Paste the PUBLIC key below.
+const FCM_VAPID_KEY = 'PASTE_YOUR_VAPID_KEY_HERE';
+const PUSH_FLAG = 'adm_push_on', PUSH_ID = 'adm_push_doc';
+let _pushReg = null, _pushMsg = null, _pushMsgBound = false, _pushBusy = false, _pushNote = '';
+const _pIsIOS = ()=>/iP(hone|ad|od)/i.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+const _pStandalone = ()=>!!window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
+
+function pushSupportState(){
+  if(_pIsIOS() && !_pStandalone()) return 'ios-install';
+  if(!('serviceWorker' in navigator) || !('Notification' in window) || !('PushManager' in window)) return 'unsupported';
+  if(Notification.permission==='denied') return 'denied';
+  return 'ok';
+}
+function pushIsOn(){ return pushSupportState()==='ok' && Notification.permission==='granted' && localStorage.getItem(PUSH_FLAG)==='1'; }
+
+window.renderMvPushCard = function(){
+  const el = document.getElementById('mvPushCard'); if(!el) return;
+  const st = pushSupportState(), on = pushIsOn();
+  let msg, btn='';
+  if(st==='ios-install') msg = '📲 iPhone/iPad: tap <b>Share ⬆️ → Add to Home Screen</b>, open the <b>ES Admin</b> icon, then come back here and tap Enable (iOS 16.4+).';
+  else if(st==='unsupported') msg = 'This browser does not support push notifications. Try Chrome, Firefox, Brave, Edge, Samsung Internet or Safari (iOS 16.4+ as Home Screen app).';
+  else if(st==='denied') msg = '🚫 Notifications are blocked for this site. Allow them in the browser/site settings, then reload.';
+  else if(on) { msg = _pushFull() ? '✅ Enabled on this device — you get an alert for every new verification request, even when logged out.' : '✅ Enabled on this device — you get an alert for every new verification request while the page is open (even logged out, in another tab or minimized).'; btn = `<button class="add-btn" style="margin:0;background:#f1f5f9;color:var(--navy);" onclick="disableVerifyPush()" ${_pushBusy?'disabled':''}><i class="fas fa-bell-slash"></i> Disable</button>`; }
+  else { msg = 'Get a notification on this device whenever a student sends a verification request.'; btn = `<button class="add-btn" style="margin:0;" onclick="enableVerifyPush()" ${_pushBusy?'disabled':''}><i class="fas fa-bell"></i> ${_pushBusy?'Enabling…':'Enable notifications'}</button>`; }
+  el.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:${on?'#f0fdf4':'#f8fafc'};border:1.5px solid ${on?'#bbf7d0':'var(--border)'};border-radius:14px;padding:12px 16px;margin-bottom:16px;">
+    <div style="font-size:12.5px;color:var(--navy);line-height:1.5;flex:1;min-width:220px;"><b>🔔 Verification alerts</b><br><span style="color:var(--muted);">${msg}</span>${_pushNote?`<br><span style="color:#b91c1c;font-weight:700;">${_pushNote}</span>`:''}</div>${btn}</div>`;
+};
+
+async function _pushGetToken(){
+  if(!(await fcmSupported())) throw new Error('FCM not supported in this browser.');
+  _pushReg = await navigator.serviceWorker.register('firebase-messaging-sw.js');
+  await navigator.serviceWorker.ready;
+  _pushMsg = getMessaging(app);
+  const token = await getToken(_pushMsg, { vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: _pushReg });
+  if(!token) throw new Error('No token received.');
+  if(!_pushMsgBound){
+    _pushMsgBound = true;
+    // page is open/focused → SDK doesn't fire the SW handler, so show it here
+    onMessage(_pushMsg, payload=>{
+      const d = payload.data||{};
+      _pushReg.showNotification(d.title||'🪪 New verification request', { body:d.body||'', icon:'icon-192.png', badge:'icon-192.png', tag:'mv-'+(d.id||'new'), data:{open:'verify'} });
+    });
+  }
+  return token;
+}
+async function _pushSaveToken(token){
+  const id = token.replace(/[\/\s]/g,'_').slice(0,150);
+  await setDoc(doc(db,'adminPushTokens',id), {
+    token, email: currentAdmin?.email||'', name: currentAdmin?.name||'',
+    platform: (_pIsIOS()?'ios':/Android/i.test(navigator.userAgent)?'android':'desktop'),
+    ua: navigator.userAgent.slice(0,180), updatedAt: Date.now()
+  }, {merge:true});
+  localStorage.setItem(PUSH_ID, id); localStorage.setItem(PUSH_FLAG,'1');
+}
+
+window.enableVerifyPush = async function(){
+  _pushNote='';
+  if(!currentAdmin) return;
+  if(pushSupportState()!=='ok'){ renderMvPushCard(); return; }
+  _pushBusy=true; renderMvPushCard();
+  try{
+    const perm = await Notification.requestPermission();   // first await = still inside the click (needed by iOS)
+    if(perm!=='granted'){ _pushNote = perm==='denied' ? '' : 'Permission was not granted.'; return; }
+    if(!_pushFull()){   // SIMPLE MODE: no server needed — alerts while the panel is open
+      try{ _pushReg = await navigator.serviceWorker.register('firebase-messaging-sw.js'); await navigator.serviceWorker.ready; }catch(e){}
+      localStorage.setItem(PUSH_FLAG,'1');
+      await _pushShow('✅ Notifications enabled', { body:'You will be alerted for every new member verification request.', icon:'icon-192.png', tag:'mv-enabled' });
+      return;
+    }
+    const token = await _pushGetToken();
+    await _pushSaveToken(token);
+    _pushReg.showNotification('✅ Notifications enabled', { body:'You will be alerted for every new member verification request.', icon:'icon-192.png', tag:'mv-enabled' });
+  }catch(e){ console.warn('push enable',e); _pushNote='Could not enable: '+(e.message||e); localStorage.removeItem(PUSH_FLAG); }
+  finally{ _pushBusy=false; renderMvPushCard(); }
+};
+
+window.disableVerifyPush = async function(){
+  _pushBusy=true; renderMvPushCard();
+  try{
+    const id = localStorage.getItem(PUSH_ID);
+    if(id) await deleteDoc(doc(db,'adminPushTokens',id));
+    if(_pushFull()){ try{ if(!_pushMsg) _pushMsg = getMessaging(app); await deleteToken(_pushMsg); }catch(e){} }
+  }catch(e){ console.warn('push disable',e); }
+  localStorage.removeItem(PUSH_FLAG); localStorage.removeItem(PUSH_ID);
+  _pushBusy=false; renderMvPushCard();
+};
+
+async function _pushShow(title, opts){
+  try{ const reg = _pushReg || (navigator.serviceWorker ? await navigator.serviceWorker.getRegistration() : null); if(reg && reg.showNotification){ return await reg.showNotification(title, opts); } }catch(e){}
+  try{ new Notification(title, opts); }catch(e){}
+}
+function notifyNewVerification(id, r){
+  if(!('Notification' in window) || Notification.permission!=='granted' || localStorage.getItem(PUSH_FLAG)!=='1') return;
+  const parts = [r.gr, r.studentLevel].filter(Boolean).join(' · ');
+  _pushShow('🪪 New verification request', { body: `${r.fullName||'A student'}${parts?' — '+parts:''}`, icon:'icon-192.png', badge:'icon-192.png', tag:'mv-'+id, data:{open:'verify'} });
+}
+const _pushFull = ()=>!FCM_VAPID_KEY.startsWith('PASTE');   // full background push only if VAPID key is set
+
+// on every admin login: refresh/rotate the token silently (keeps notifications alive)
+async function syncVerifyPush(){
+  try{
+    if(localStorage.getItem(PUSH_FLAG)==='1' && pushSupportState()==='ok' && Notification.permission==='granted' && _pushFull()){
+      const token = await _pushGetToken(); await _pushSaveToken(token);
+    }
+  }catch(e){ console.warn('push sync',e); }
+  renderMvPushCard();
+}
+
+// deep-link: clicking a notification opens Member Verification → Pending
+let _pendingOpenVerify = new URLSearchParams(location.search).get('open')==='verify';
+window.openVerifyFromPush = function(){
+  if(!adminUnlocked){ _pendingOpenVerify = true; return; }   // will open right after login
+  _pendingOpenVerify = false;
+  try{ mvStatusFilter = 'pending'; }catch(e){}
+  const n = document.querySelector('.adm-nav-item[data-tab="verify-admin"]'); if(n) n.click();
+  try{ mvSwitchTab('requests'); }catch(e){}
+  if(location.search) history.replaceState(null,'',location.pathname);
+};
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('message', e=>{ if(e.data && e.data.type==='open-verify') window.openVerifyFromPush(); });
+}
+
 // ══ ADMIN IDLE AUTO-LOGOUT (5 min without any activity) ══
 const ADMIN_IDLE_MS = 5*60*1000;
 const ADMIN_ACT_KEY = 'adm_last_activity';
@@ -3337,6 +3469,8 @@ onAuthStateChanged(auth, async user => {
       setupResourceRequestsListener();
       setupVerifyListener();
       loadMvConfig();
+      syncVerifyPush();
+      if(_pendingOpenVerify) setTimeout(()=>window.openVerifyFromPush(), 400);
     } else {
       // ── Not an admin — reject and sign out immediately ──
       await signOut(auth);
@@ -3353,6 +3487,7 @@ onAuthStateChanged(auth, async user => {
   } else {
     // ── Logged out ──
     adminUnlocked=false; currentAdmin=null;
+    if(_mvUnsub && localStorage.getItem(PUSH_FLAG)!=='1'){ try{ _mvUnsub(); }catch(e){} _mvUnsub=null; }   // keep alerts alive when logged out
     studentLoggedIn=false; currentStudent=null;
 
     // Remove admin-mode so nav/site restores properly
@@ -7395,8 +7530,17 @@ function mvSave(){
   }, 300);
 }
 
+let _mvUnsub = null;
 function setupVerifyListener(){
-  onSnapshot(collection(db,'memberVerifications'), snap=>{
+  if(_mvUnsub){ try{ _mvUnsub(); }catch(e){} _mvUnsub = null; }   // avoid duplicate listeners after re-login
+  let _first = true;
+  _mvUnsub = onSnapshot(collection(db,'memberVerifications'), snap=>{
+    if(!_first){
+      snap.docChanges().forEach(c=>{
+        if(c.type==='added'){ const r=c.doc.data(); if(!r.status||r.status==='pending') notifyNewVerification(c.doc.id, r); }
+      });
+    }
+    _first = false;
     mvVerifyList = snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
     const badge = document.getElementById('verifyReqBadge');
     const pendingCount = mvVerifyList.filter(r=>r.status==='pending'||!r.status).length;
@@ -7405,7 +7549,10 @@ function setupVerifyListener(){
   });
 }
 
+if(localStorage.getItem(PUSH_FLAG)==='1' && 'Notification' in window && Notification.permission==='granted'){ setupVerifyListener(); }
+
 window.renderAdminVerify = function(){
+  if(window.renderMvPushCard) renderMvPushCard();
   mvSwitchTab(mvActiveTab);
 };
 
